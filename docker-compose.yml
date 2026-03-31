@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  kafka:
+    build: ./kafka
+    ports:
+      - "9092:9092"
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    networks:
+      - kafka-network
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+
+  sensor_simulator:
+    build: ./sensor_simulator
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - mqtt-broker
+    networks:
+      - kafka-network
+
+  device_service:
+    build: ./device_service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    networks:
+      - kafka-network
+
+  control_service:
+    build: ./control_service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    networks:
+      - kafka-network
+
+  user_interface:
+    build: ./user_interface
+    expose:
+      - "3000"
+    networks:
+      - kafka-network
+
+  nginx:
+    build: ./nginx
+    ports:
+      - "8080:80"
+    depends_on:
+      - control_service
+      - user_interface
+    networks:
+      - kafka-network
+
+  notification-service:
+    build: ./notification-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - kafka-network
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=sensordb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  sensor_storage:
+    build: ./sensor_storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/sensordb
+    networks:
+      - kafka-network
+
+volumes:
+  postgres_data:
+
+networks:
+  kafka-network:
+    driver: bridge
